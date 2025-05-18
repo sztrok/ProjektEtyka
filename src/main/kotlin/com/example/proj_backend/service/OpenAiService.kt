@@ -3,7 +3,6 @@ package com.example.proj_backend.service
 import com.example.proj_backend.data.ChatMessage
 import com.example.proj_backend.data.ChatRequest
 import com.example.proj_backend.data.ChatResponse
-import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 
