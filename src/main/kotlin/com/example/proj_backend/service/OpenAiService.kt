@@ -30,24 +30,20 @@ class OpenAiService(
         chatSessionManager.initSession(userId)
         val messages = chatSessionManager.getChatHistory(userId).toMutableList()
 
-        // Handle greetings and role questions directly without validation
         val lowerPrompt = prompt.lowercase().trim()
 
-        // Handle greetings
         if (isGreeting(lowerPrompt)) {
             val greeting = getGreetingResponse()
             chatSessionManager.addMessage(userId, prompt, greeting)
             return greeting
         }
 
-        // Handle questions about chatbot's purpose
         if (isAskingAboutPurpose(lowerPrompt)) {
             val purposeExplanation = getChatbotPurposeExplanation()
             chatSessionManager.addMessage(userId, prompt, purposeExplanation)
             return purposeExplanation
         }
 
-        // Pass the entire chat history for context assessment
         val isValid = requestCheck(userId, prompt, messages)
 
         if (!isValid) {
@@ -59,7 +55,6 @@ class OpenAiService(
 
         messages.add(ChatMessage("user", prompt))
 
-        // Add a system message to guide the main conversation
         if (messages.none { it.role == "system" }) {
             messages.add(0, ChatMessage(
                 "system", """
@@ -106,9 +101,6 @@ class OpenAiService(
         }
     }
 
-    /**
-     * Checks if the input is a greeting
-     */
     private fun isGreeting(input: String): Boolean {
         val greetingPatterns = listOf(
             "cześć", "czesc", "hej", "siema", "dzień dobry", "dzien dobry",
@@ -123,9 +115,6 @@ class OpenAiService(
         }
     }
 
-    /**
-     * Checks if the user is asking about the chatbot's purpose or role
-     */
     private fun isAskingAboutPurpose(input: String): Boolean {
         val purposePatterns = listOf(
             "co potrafisz", "co umiesz", "czym się zajmujesz", "czym sie zajmujesz",
@@ -142,9 +131,6 @@ class OpenAiService(
         }
     }
 
-    /**
-     * Returns a randomized greeting response
-     */
     private fun getGreetingResponse(): String {
         val greetings = listOf(
             "Dzień dobry! W czym mogę pomóc odnośnie ochrony danych osobowych?",
@@ -156,9 +142,6 @@ class OpenAiService(
         return greetings.random()
     }
 
-    /**
-     * Returns explanation about the chatbot's purpose
-     */
     private fun getChatbotPurposeExplanation(): String {
         return """
         Jestem asystentem specjalizującym się w tematach związanych z ochroną danych osobowych i etycznym przetwarzaniem informacji.
@@ -179,10 +162,8 @@ class OpenAiService(
 
     private fun requestCheck(userId: String, prompt: String, chatHistory: List<ChatMessage>): Boolean {
         try {
-            // Copy the chat history to avoid modifying the original
             val messages = chatHistory.toMutableList()
 
-            // Add system message for validation at the beginning
             messages.add(0, ChatMessage(
                 "system", """
             Jesteś modułem filtrującym dla czatbota edukującego na temat etyki w przetwarzaniu danych osobowych.
@@ -206,7 +187,6 @@ class OpenAiService(
         """.trimIndent()
             ))
 
-            // Add the current prompt as the last user message
             messages.add(ChatMessage("user", prompt))
 
             logger.info { "Validating message for user $userId: \"${prompt.take(50)}...\"" }
@@ -223,16 +203,14 @@ class OpenAiService(
                 .bodyToMono(ChatResponse::class.java)
                 .block()
 
-            // Check if response is null
             if (response == null) {
                 logger.error { "Null response from OpenAI API while validating message for user $userId" }
-                return true // Default to accepting the message if API fails
+                return true
             }
 
             val content = response.choices.firstOrNull()?.message?.content?.trim() ?: ""
             logger.info { "Raw validation response: $content" }
 
-            // Try multiple regex patterns to handle different possible formats
             val confidenceValue = extractConfidenceValue(content)
 
             if (confidenceValue != null) {
@@ -241,8 +219,6 @@ class OpenAiService(
             } else {
                 logger.warn { "Failed to parse confidence value from response: $content" }
 
-                // If we can't parse the confidence value but the content contains keywords
-                // related to acceptance, we'll approve the message
                 val acceptanceKeywords = listOf("valid", "appropriate", "relevant", "related", "yes", "acceptable")
                 val rejectionKeywords = listOf("invalid", "inappropriate", "irrelevant", "unrelated", "no", "reject")
 
@@ -261,13 +237,13 @@ class OpenAiService(
                     }
                     else -> {
                         logger.info { "Could not determine confidence, defaulting to accept" }
-                        true // Default to accepting if we can't determine
+                        true
                     }
                 }
             }
         } catch (e: Exception) {
             logger.error(e) { "Error in requestCheck for user $userId" }
-            return true // Default to accepting the message if there's an error
+            return true
         }
     }
 
@@ -275,15 +251,12 @@ class OpenAiService(
      * Attempts to extract the confidence value from the response using multiple patterns
      */
     private fun extractConfidenceValue(content: String): Int? {
-        // Pattern 1: Standard JSON format
         val jsonPattern = """\{\s*"confidence"\s*:\s*(\d{1,3})\s*\}""".toRegex()
         jsonPattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
 
-        // Pattern 2: Number only
         val numberOnlyPattern = """^\s*(\d{1,3})\s*$""".toRegex()
         numberOnlyPattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
 
-        // Pattern 3: Try to parse as a JSON object
         try {
             val jsonObject = org.json.JSONObject(content)
             if (jsonObject.has("confidence")) {
@@ -293,11 +266,9 @@ class OpenAiService(
             // Ignore JSON parsing errors and try other methods
         }
 
-        // Pattern 4: Look for "confidence: NUMBER" or "confidence = NUMBER" format
         val colonPattern = """confidence\s*[:=]\s*(\d{1,3})""".toRegex(RegexOption.IGNORE_CASE)
         colonPattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
 
-        // Pattern 5: Look for "The confidence is NUMBER" or similar phrases
         val phrasePattern = """confidence\s+(?:is|equals|score|value|rating)\s+(\d{1,3})""".toRegex(RegexOption.IGNORE_CASE)
         phrasePattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
 
