@@ -14,8 +14,13 @@ class OpenAiController(private val openAiService: OpenAiService) {
     private val logger = KotlinLogging.logger {}
 
     @GetMapping("/chat")
-    fun chat(@RequestParam prompt: String): String {
+    fun chat(@RequestParam userId: String, @RequestParam prompt: String): String {
         logger.info { prompt }
-        return openAiService.chat(prompt)
+        return openAiService.chat(userId, prompt)
+    }
+
+    @GetMapping("test")
+    fun test(): String {
+        return openAiService.testOpenAiConnection()
     }
 }

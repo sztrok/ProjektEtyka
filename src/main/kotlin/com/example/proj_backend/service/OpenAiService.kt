@@ -1,34 +1,48 @@
 package com.example.proj_backend.service
 
+import com.example.proj_backend.component.ChatSessionManager
 import com.example.proj_backend.data.ChatMessage
 import com.example.proj_backend.data.ChatRequest
 import com.example.proj_backend.data.ChatResponse
+import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 
 
 @Service
-class OpenAiService(private val openAiWebClient: WebClient) {
+class OpenAiService(
+    private val chatSessionManager: ChatSessionManager,
+    private val openAiWebClient: WebClient,
+) {
 
-    fun chat(prompt: String): String {
+    private val logger = KotlinLogging.logger {}
+
+    fun testOpenAiConnection(): String {
+        val response = openAiWebClient.get()
+            .uri("/models")
+            .retrieve()
+            .bodyToMono(String::class.java)
+            .block()
+        return "Response from OpenAI: $response"
+    }
+
+    fun chat(userId: String, prompt: String): String {
+
+        chatSessionManager.initSession(userId)
+        val messages = chatSessionManager.getChatHistory(userId).toMutableList()
+
         val isValid = requestCheck(prompt)
 
         if (!isValid) {
             return "Prompt spoza zakresu aplikacji."
         }
 
+
+        messages.add(ChatMessage("user", prompt))
+
         val request = ChatRequest(
             model = "gpt-3.5-turbo",
-            messages = listOf(
-                ChatMessage(
-                    "system",
-                    "Jesteś asystentem edukującym na temat etyki w przetwarzaniu danych osobowych. " +
-                            "Użytkownicy to przedsiębiorstwa, które wykorzystują różne dane do swoich modeli. " +
-                            "Twoim zadaniem jest edukowanie ich na temat anonimizacji, zagrożeń związanych z brakiem anonimizacji oraz związanych z nieodpowiednią anonimizacją. " +
-                            "Potrafisz przedstawić odpowiednie metody anonimizacji na podstawie nazwy kolumny danych."
-                ),
-                ChatMessage("user", prompt)
-            )
+            messages = messages
         )
 
         val response = openAiWebClient.post()
@@ -38,21 +52,42 @@ class OpenAiService(private val openAiWebClient: WebClient) {
             .bodyToMono(ChatResponse::class.java)
             .block()
 
-        return response?.choices?.firstOrNull()?.message?.content ?: "Brak odpowiedzi"
+        val responseMessage = response?.choices?.firstOrNull()?.message?.content ?: "Brak odpowiedzi"
+        chatSessionManager.addMessage(userId, prompt, responseMessage)
+        return responseMessage
     }
 
-    fun requestCheck(prompt: String): Boolean {
+    private fun requestCheck(prompt: String): Boolean {
         val request = ChatRequest(
             model = "gpt-3.5-turbo",
-            messages = listOf(
+            messages = mutableListOf(
                 ChatMessage(
-                    "system",
-                    "Jesteś asystentem edukującym na temat etyki w przetwarzaniu danych osobowych. " +
-                            "Twoim zadaniem jest określenie, czy podany prompt dotyczy kwestii anonimizacji danych lub jest pytaniem dotyczącym twojego zastosowania i zadania. " +
-                            "Zwracasz TYLKO jeden obiekt JSON w formacie: { \"valid\": true } lub { \"valid\": false }. " +
-                            "Nie dodajesz żadnych wyjaśnień ani tekstu poza tym JSON-em."
+                    "system", """
+                    Jesteś asystentem edukującym na temat etyki w przetwarzaniu danych osobowych. 
+                    Użytkownicy to firmy, które chcą dowiedzieć się więcej o takich tematach jak:
+                    - anonimizacja danych,
+                    - zagrożenia związane z brakiem anonimizacji,
+                    - ochrona danych osobowych,
+                    - etyczne wykorzystanie danych.
+                    
+                    Twoim zadaniem jest sprawdzenie, w jakim stopniu podana wiadomość dotyczy co najmniej jednego z poniższych tematów:
+                    1. anonimizacja danych,
+                    2. ochrona danych osobowych,
+                    3. etyka przetwarzania danych,
+                    4. prośba o więcej informacji,
+                    5. doprecyzowanie informacji,
+                    6. pytanie o Twoje zadanie lub zastosowanie,
+                    7. powitanie (np. „Cześć”, „Dzień dobry”).
+                    
+                    Weź pod uwagę kontekst poprzednie wiadomosci i odpowiedzi.
+
+                    Zwróć **wyłącznie** procentową pewność jako liczbę całkowitą od 0 do 100, w formacie:
+                    { "confidence": XX }
+
+                    Nie dodawaj żadnych dodatkowych komentarzy ani tekstu. Tylko czysty JSON.
+                """.trimIndent()
                 ),
-                ChatMessage("user", prompt)
+                ChatMessage("user", prompt),
             )
         )
 
@@ -65,8 +100,12 @@ class OpenAiService(private val openAiWebClient: WebClient) {
 
         val content = response?.choices?.firstOrNull()?.message?.content?.trim() ?: ""
 
-        val match = Regex("""\{\s*"valid"\s*:\s*(true|false)\s*}""").find(content)
-        return match?.groups?.get(1)?.value?.toBooleanStrictOrNull() ?: false
+        val match = Regex("""\{\s*"confidence"\s*:\s*(\d{1,3})\s*}""").find(content)
+        val confidence = match?.groups?.get(1)?.value?.toIntOrNull() ?: return false
+
+        logger.info { "CONFIDENCE: $confidence" }
+
+        return confidence >= 60
     }
 
 
