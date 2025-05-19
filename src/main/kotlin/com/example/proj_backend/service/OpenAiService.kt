@@ -27,86 +27,280 @@ class OpenAiService(
     }
 
     fun chat(userId: String, prompt: String): String {
-
         chatSessionManager.initSession(userId)
         val messages = chatSessionManager.getChatHistory(userId).toMutableList()
 
-        val isValid = requestCheck(prompt)
+        // Handle greetings and role questions directly without validation
+        val lowerPrompt = prompt.lowercase().trim()
 
-        if (!isValid) {
-            return "Prompt spoza zakresu aplikacji."
+        // Handle greetings
+        if (isGreeting(lowerPrompt)) {
+            val greeting = getGreetingResponse()
+            chatSessionManager.addMessage(userId, prompt, greeting)
+            return greeting
         }
 
+        // Handle questions about chatbot's purpose
+        if (isAskingAboutPurpose(lowerPrompt)) {
+            val purposeExplanation = getChatbotPurposeExplanation()
+            chatSessionManager.addMessage(userId, prompt, purposeExplanation)
+            return purposeExplanation
+        }
+
+        // Pass the entire chat history for context assessment
+        val isValid = requestCheck(userId, prompt, messages)
+
+        if (!isValid) {
+            val rejectionMessage = "Przepraszamy, ale Twoje pytanie wykracza poza zakres tej aplikacji. Ten asystent specjalizuje się w tematach związanych z ochroną danych osobowych, ich anonimizacją i etyką przetwarzania. Czy mogę pomóc Ci w tych obszarach?"
+            logger.warn { "Request rejected for user $userId with prompt: \"${prompt.take(50)}...\"" }
+            chatSessionManager.addMessage(userId, prompt, rejectionMessage)
+            return rejectionMessage
+        }
 
         messages.add(ChatMessage("user", prompt))
+
+        // Add a system message to guide the main conversation
+        if (messages.none { it.role == "system" }) {
+            messages.add(0, ChatMessage(
+                "system", """
+            Jesteś asystentem specjalizującym się w obszarze ochrony danych osobowych i etyki przetwarzania danych.
+            Dostarczasz profesjonalnych, rzeczowych i dokładnych informacji na tematy:
+            - Anonimizacja i pseudonimizacja danych
+            - RODO i inne przepisy o ochronie danych osobowych
+            - Bezpieczeństwo danych i zapobieganie naruszeniom
+            - Etyczne aspekty przetwarzania danych
+            - Dobre praktyki w zakresie ochrony prywatności
+            
+            Twoje odpowiedzi powinny być:
+            - Informacyjne i edukacyjne
+            - Oparte na aktualnych regulacjach i standardach
+            - Dostosowane do potrzeb firm i organizacji
+            - Praktyczne i możliwe do zastosowania
+            
+            Unikaj odpowiedzi na pytania niezwiązane z tematyką ochrony danych osobowych.
+            """
+            ))
+        }
 
         val request = ChatRequest(
             model = "gpt-3.5-turbo",
             messages = messages
         )
 
-        val response = openAiWebClient.post()
-            .uri("/chat/completions")
-            .bodyValue(request)
-            .retrieve()
-            .bodyToMono(ChatResponse::class.java)
-            .block()
+        try {
+            val response = openAiWebClient.post()
+                .uri("/chat/completions")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(ChatResponse::class.java)
+                .block()
 
-        val responseMessage = response?.choices?.firstOrNull()?.message?.content ?: "Brak odpowiedzi"
-        chatSessionManager.addMessage(userId, prompt, responseMessage)
-        return responseMessage
+            val responseMessage = response?.choices?.firstOrNull()?.message?.content ?: "Brak odpowiedzi"
+            chatSessionManager.addMessage(userId, prompt, responseMessage)
+            return responseMessage
+        } catch (e: Exception) {
+            logger.error(e) { "Error getting response from OpenAI for user $userId" }
+            val errorMessage = "Przepraszamy, wystąpił problem z uzyskaniem odpowiedzi. Proszę spróbować ponownie za chwilę."
+            chatSessionManager.addMessage(userId, prompt, errorMessage)
+            return errorMessage
+        }
     }
 
-    private fun requestCheck(prompt: String): Boolean {
-        val request = ChatRequest(
-            model = "gpt-3.5-turbo",
-            messages = mutableListOf(
-                ChatMessage(
-                    "system", """
-                    Jesteś asystentem edukującym na temat etyki w przetwarzaniu danych osobowych. 
-                    Użytkownicy to firmy, które chcą dowiedzieć się więcej o takich tematach jak:
-                    - anonimizacja danych,
-                    - zagrożenia związane z brakiem anonimizacji,
-                    - ochrona danych osobowych,
-                    - etyczne wykorzystanie danych.
-                    
-                    Twoim zadaniem jest sprawdzenie, w jakim stopniu podana wiadomość dotyczy co najmniej jednego z poniższych tematów:
-                    1. anonimizacja danych,
-                    2. ochrona danych osobowych,
-                    3. etyka przetwarzania danych,
-                    4. prośba o więcej informacji,
-                    5. doprecyzowanie informacji,
-                    6. pytanie o Twoje zadanie lub zastosowanie,
-                    7. powitanie (np. „Cześć”, „Dzień dobry”).
-                    
-                    Weź pod uwagę kontekst poprzednie wiadomosci i odpowiedzi.
-
-                    Zwróć **wyłącznie** procentową pewność jako liczbę całkowitą od 0 do 100, w formacie:
-                    { "confidence": XX }
-
-                    Nie dodawaj żadnych dodatkowych komentarzy ani tekstu. Tylko czysty JSON.
-                """.trimIndent()
-                ),
-                ChatMessage("user", prompt),
-            )
+    /**
+     * Checks if the input is a greeting
+     */
+    private fun isGreeting(input: String): Boolean {
+        val greetingPatterns = listOf(
+            "cześć", "czesc", "hej", "siema", "dzień dobry", "dzien dobry",
+            "dobry wieczór", "dobry wieczor", "witaj", "witam", "halo", "hi", "hello"
         )
 
-        val response = openAiWebClient.post()
-            .uri("/chat/completions")
-            .bodyValue(request)
-            .retrieve()
-            .bodyToMono(ChatResponse::class.java)
-            .block()
-
-        val content = response?.choices?.firstOrNull()?.message?.content?.trim() ?: ""
-
-        val match = Regex("""\{\s*"confidence"\s*:\s*(\d{1,3})\s*}""").find(content)
-        val confidence = match?.groups?.get(1)?.value?.toIntOrNull() ?: return false
-
-        logger.info { "CONFIDENCE: $confidence" }
-
-        return confidence >= 60
+        return greetingPatterns.any { greeting ->
+            input == greeting ||
+                    input.startsWith("$greeting ") ||
+                    input.contains(" $greeting ") ||
+                    input.endsWith(" $greeting")
+        }
     }
 
+    /**
+     * Checks if the user is asking about the chatbot's purpose or role
+     */
+    private fun isAskingAboutPurpose(input: String): Boolean {
+        val purposePatterns = listOf(
+            "co potrafisz", "co umiesz", "czym się zajmujesz", "czym sie zajmujesz",
+            "jakie jest twoje zadanie", "jakie masz zadanie", "do czego służysz",
+            "do czego sluzysz", "w czym możesz pomóc", "w czym mozesz pomoc",
+            "jak możesz mi pomóc", "jak mozesz mi pomoc", "co robisz", "kim jesteś",
+            "kim jestes", "o co mogę cię zapytać", "o co moge cie zapytac",
+            "czego mogę się dowiedzieć", "czego moge sie dowiedziec", "w czym mi pomożesz",
+            "jaka jest twoja rola", "jaka jest twoja funkcja"
+        )
 
+        return purposePatterns.any { pattern ->
+            input.contains(pattern)
+        }
+    }
+
+    /**
+     * Returns a randomized greeting response
+     */
+    private fun getGreetingResponse(): String {
+        val greetings = listOf(
+            "Dzień dobry! W czym mogę pomóc odnośnie ochrony danych osobowych?",
+            "Witam! Jestem tu, aby pomóc w kwestiach związanych z etyką przetwarzania danych. Jak mogę Ci pomóc?",
+            "Cześć! Chętnie odpowiem na Twoje pytania dotyczące anonimizacji i ochrony danych osobowych.",
+            "Witaj! Służę pomocą w tematach związanych z RODO i bezpieczeństwem danych osobowych. W czym mogę pomóc?"
+        )
+
+        return greetings.random()
+    }
+
+    /**
+     * Returns explanation about the chatbot's purpose
+     */
+    private fun getChatbotPurposeExplanation(): String {
+        return """
+        Jestem asystentem specjalizującym się w tematach związanych z ochroną danych osobowych i etycznym przetwarzaniem informacji.
+        
+        Mogę Ci pomóc w następujących obszarach:
+        
+        - Anonimizacja i pseudonimizacja danych osobowych
+        - Przepisy RODO i inne regulacje dotyczące ochrony danych
+        - Bezpieczeństwo danych i zapobieganie wyciekom
+        - Etyczne aspekty przetwarzania danych osobowych
+        - Dobre praktyki w zakresie "privacy by design"
+        - Procedury i polityki ochrony danych
+        
+        Możesz zadawać mi pytania dotyczące powyższych tematów, a ja postaram się udzielić Ci rzetelnych informacji i wskazówek.
+        W czym konkretnie mogę Ci dziś pomóc?
+    """.trimIndent()
+    }
+
+    private fun requestCheck(userId: String, prompt: String, chatHistory: List<ChatMessage>): Boolean {
+        try {
+            // Copy the chat history to avoid modifying the original
+            val messages = chatHistory.toMutableList()
+
+            // Add system message for validation at the beginning
+            messages.add(0, ChatMessage(
+                "system", """
+            Jesteś modułem filtrującym dla czatbota edukującego na temat etyki w przetwarzaniu danych osobowych.
+            Twoim **jedynym zadaniem** jest ocena, czy ostatnia wiadomość użytkownika powinna zostać przetworzona.
+            
+            Główne tematy, których dotyczy bot:
+            - Anonimizacja i pseudonimizacja danych
+            - RODO i przepisy o ochronie danych osobowych
+            - Bezpieczeństwo danych i zagrożenia związane z wyciekami
+            - Etyka wykorzystania danych osobowych
+            
+            Oceń wiadomość użytkownika na skali od 0 do 100, gdzie:
+            - 0-59: Wiadomość niezwiązana z tematami ochrony danych
+            - 60-100: Wiadomość związana z tematami ochrony danych lub jest naturalną częścią konwersacji
+            
+            Odpowiedz używając WYŁĄCZNIE tego formatu JSON:
+            {"confidence": LICZBA}
+            
+            Gdzie LICZBA to wartość od 0 do 100.
+            Nie dodawaj żadnych wyjaśnień, komentarzy ani innych treści.
+        """.trimIndent()
+            ))
+
+            // Add the current prompt as the last user message
+            messages.add(ChatMessage("user", prompt))
+
+            logger.info { "Validating message for user $userId: \"${prompt.take(50)}...\"" }
+
+            val request = ChatRequest(
+                model = "gpt-3.5-turbo",
+                messages = messages,
+            )
+
+            val response = openAiWebClient.post()
+                .uri("/chat/completions")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(ChatResponse::class.java)
+                .block()
+
+            // Check if response is null
+            if (response == null) {
+                logger.error { "Null response from OpenAI API while validating message for user $userId" }
+                return true // Default to accepting the message if API fails
+            }
+
+            val content = response.choices.firstOrNull()?.message?.content?.trim() ?: ""
+            logger.info { "Raw validation response: $content" }
+
+            // Try multiple regex patterns to handle different possible formats
+            val confidenceValue = extractConfidenceValue(content)
+
+            if (confidenceValue != null) {
+                logger.info { "CONFIDENCE for user $userId: $confidenceValue" }
+                return confidenceValue >= 60
+            } else {
+                logger.warn { "Failed to parse confidence value from response: $content" }
+
+                // If we can't parse the confidence value but the content contains keywords
+                // related to acceptance, we'll approve the message
+                val acceptanceKeywords = listOf("valid", "appropriate", "relevant", "related", "yes", "acceptable")
+                val rejectionKeywords = listOf("invalid", "inappropriate", "irrelevant", "unrelated", "no", "reject")
+
+                val contentLower = content.lowercase()
+                val hasAcceptanceKeywords = acceptanceKeywords.any { contentLower.contains(it) }
+                val hasRejectionKeywords = rejectionKeywords.any { contentLower.contains(it) }
+
+                return when {
+                    hasAcceptanceKeywords && !hasRejectionKeywords -> {
+                        logger.info { "Message accepted based on keywords" }
+                        true
+                    }
+                    hasRejectionKeywords && !hasAcceptanceKeywords -> {
+                        logger.info { "Message rejected based on keywords" }
+                        false
+                    }
+                    else -> {
+                        logger.info { "Could not determine confidence, defaulting to accept" }
+                        true // Default to accepting if we can't determine
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logger.error(e) { "Error in requestCheck for user $userId" }
+            return true // Default to accepting the message if there's an error
+        }
+    }
+
+    /**
+     * Attempts to extract the confidence value from the response using multiple patterns
+     */
+    private fun extractConfidenceValue(content: String): Int? {
+        // Pattern 1: Standard JSON format
+        val jsonPattern = """\{\s*"confidence"\s*:\s*(\d{1,3})\s*\}""".toRegex()
+        jsonPattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
+
+        // Pattern 2: Number only
+        val numberOnlyPattern = """^\s*(\d{1,3})\s*$""".toRegex()
+        numberOnlyPattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
+
+        // Pattern 3: Try to parse as a JSON object
+        try {
+            val jsonObject = org.json.JSONObject(content)
+            if (jsonObject.has("confidence")) {
+                return jsonObject.getInt("confidence")
+            }
+        } catch (e: Exception) {
+            // Ignore JSON parsing errors and try other methods
+        }
+
+        // Pattern 4: Look for "confidence: NUMBER" or "confidence = NUMBER" format
+        val colonPattern = """confidence\s*[:=]\s*(\d{1,3})""".toRegex(RegexOption.IGNORE_CASE)
+        colonPattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
+
+        // Pattern 5: Look for "The confidence is NUMBER" or similar phrases
+        val phrasePattern = """confidence\s+(?:is|equals|score|value|rating)\s+(\d{1,3})""".toRegex(RegexOption.IGNORE_CASE)
+        phrasePattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
+
+        return null
+    }
 }
