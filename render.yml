@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: spring-backend
+    env: docker
+    buildCommand: docker build -t spring-backend .
+    startCommand: docker run -p $PORT:8080 spring-backend
