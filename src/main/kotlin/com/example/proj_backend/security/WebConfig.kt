@@ -12,7 +12,7 @@ class WebConfig {
         return object : WebMvcConfigurer {
             override fun addCorsMappings(registry: CorsRegistry) {
                 registry.addMapping("/**")
-                    .allowedOrigins("http://localhost:5173") // frontend Vite
+                    .allowedOrigins("http://localhost:5173", "https://pojektetykafe.onrender.com") // frontend Vite
                     .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                     .allowedHeaders("*")
                     .allowCredentials(false)
