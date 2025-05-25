@@ -47,8 +47,7 @@ class OpenAiService(
         val isValid = requestCheck(userId, prompt, messages)
 
         if (!isValid) {
-            val rejectionMessage =
-                "Przepraszamy, ale Twoje pytanie wykracza poza zakres tej aplikacji. Ten asystent specjalizuje się w tematach związanych z ochroną danych osobowych, ich anonimizacją i etyką przetwarzania. Czy mogę pomóc Ci w tych obszarach?"
+            val rejectionMessage = "Przepraszamy, ale Twoje pytanie wykracza poza zakres tej aplikacji. Ten asystent specjalizuje się w tematach związanych z ochroną danych osobowych, ich anonimizacją i etyką przetwarzania. Czy mogę pomóc Ci w tych obszarach?"
             logger.warn { "Request rejected for user $userId with prompt: \"${prompt.take(50)}...\"" }
             chatSessionManager.addMessage(userId, prompt, rejectionMessage)
             return rejectionMessage
@@ -57,9 +56,8 @@ class OpenAiService(
         messages.add(ChatMessage("user", prompt))
 
         if (messages.none { it.role == "system" }) {
-            messages.add(
-                0, ChatMessage(
-                    "system", """
+            messages.add(0, ChatMessage(
+                "system", """
             Jesteś asystentem specjalizującym się w obszarze ochrony danych osobowych i etyki przetwarzania danych.
             Dostarczasz profesjonalnych, rzeczowych i dokładnych informacji na tematy:
             - Anonimizacja i pseudonimizacja danych
@@ -76,8 +74,7 @@ class OpenAiService(
             
             Unikaj odpowiedzi na pytania niezwiązane z tematyką ochrony danych osobowych.
             """
-                )
-            )
+            ))
         }
 
         val request = ChatRequest(
@@ -98,8 +95,7 @@ class OpenAiService(
             return responseMessage
         } catch (e: Exception) {
             logger.error(e) { "Error getting response from OpenAI for user $userId" }
-            val errorMessage =
-                "Przepraszamy, wystąpił problem z uzyskaniem odpowiedzi. Proszę spróbować ponownie za chwilę."
+            val errorMessage = "Przepraszamy, wystąpił problem z uzyskaniem odpowiedzi. Proszę spróbować ponownie za chwilę."
             chatSessionManager.addMessage(userId, prompt, errorMessage)
             return errorMessage
         }
@@ -166,11 +162,10 @@ class OpenAiService(
 
     private fun requestCheck(userId: String, prompt: String, chatHistory: List<ChatMessage>): Boolean {
         try {
-            val messages = chatHistory.map { ChatMessage(role = "user", content = it.content) }.toMutableList()
+            val messages = chatHistory.toMutableList()
 
-            messages.add(
-                0, ChatMessage(
-                    "system", """
+            messages.add(0, ChatMessage(
+                "system", """
             Jesteś modułem filtrującym dla czatbota edukującego na temat etyki w przetwarzaniu danych osobowych.
             Twoim **jedynym zadaniem** jest ocena, czy ostatnia wiadomość użytkownika powinna zostać przetworzona.
             
@@ -190,8 +185,7 @@ class OpenAiService(
             Gdzie LICZBA to wartość od 0 do 100.
             Nie dodawaj żadnych wyjaśnień, komentarzy ani innych treści.
         """.trimIndent()
-                )
-            )
+            ))
 
             messages.add(ChatMessage("user", prompt))
 
@@ -202,65 +196,51 @@ class OpenAiService(
                 messages = messages,
             )
 
-            val responses = List(5) {
-                try {
-                    openAiWebClient.post()
-                        .uri("/chat/completions")
-                        .bodyValue(request)
-                        .retrieve()
-                        .bodyToMono(ChatResponse::class.java)
-                        .block()
-                } catch (e: Exception) {
-                    logger.error(e) { "Request $it failed for user $userId" }
-                    null
-                }
-            }.filterNotNull()
+            val response = openAiWebClient.post()
+                .uri("/chat/completions")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(ChatResponse::class.java)
+                .block()
 
-            if (responses.isEmpty()) {
-                logger.error { "All responses from OpenAI API failed for user $userId" }
+            if (response == null) {
+                logger.error { "Null response from OpenAI API while validating message for user $userId" }
                 return true
             }
 
-            for (response in responses) {
-                val content = response.choices.firstOrNull()?.message?.content?.trim() ?: continue
-                logger.info { "Raw validation response: $content" }
+            val content = response.choices.firstOrNull()?.message?.content?.trim() ?: ""
+            logger.info { "Raw validation response: $content" }
 
-                val confidenceValue = extractConfidenceValue(content)
+            val confidenceValue = extractConfidenceValue(content)
 
-                if (confidenceValue != null) {
-                    logger.info { "CONFIDENCE for user $userId: $confidenceValue" }
-                    if (confidenceValue >= 60) return true
+            if (confidenceValue != null) {
+                logger.info { "CONFIDENCE for user $userId: $confidenceValue" }
+                return confidenceValue >= 60
+            } else {
+                logger.warn { "Failed to parse confidence value from response: $content" }
+
+                val acceptanceKeywords = listOf("valid", "appropriate", "relevant", "related", "yes", "acceptable")
+                val rejectionKeywords = listOf("invalid", "inappropriate", "irrelevant", "unrelated", "no", "reject")
+
+                val contentLower = content.lowercase()
+                val hasAcceptanceKeywords = acceptanceKeywords.any { contentLower.contains(it) }
+                val hasRejectionKeywords = rejectionKeywords.any { contentLower.contains(it) }
+
+                return when {
+                    hasAcceptanceKeywords && !hasRejectionKeywords -> {
+                        logger.info { "Message accepted based on keywords" }
+                        true
+                    }
+                    hasRejectionKeywords && !hasAcceptanceKeywords -> {
+                        logger.info { "Message rejected based on keywords" }
+                        false
+                    }
+                    else -> {
+                        logger.info { "Could not determine confidence, defaulting to accept" }
+                        true
+                    }
                 }
             }
-
-// Jeśli żadne confidence nie było >= 60, analizujemy zawartość dalej
-            val fallbackContent = responses.firstOrNull()?.choices?.firstOrNull()?.message?.content?.trim() ?: ""
-            logger.warn { "Failed to reach confidence threshold, using fallback content: $fallbackContent" }
-
-            val acceptanceKeywords = listOf("valid", "appropriate", "relevant", "related", "yes", "acceptable")
-            val rejectionKeywords = listOf("invalid", "inappropriate", "irrelevant", "unrelated", "no", "reject")
-
-            val contentLower = fallbackContent.lowercase()
-            val hasAcceptanceKeywords = acceptanceKeywords.any { contentLower.contains(it) }
-            val hasRejectionKeywords = rejectionKeywords.any { contentLower.contains(it) }
-
-            return when {
-                hasAcceptanceKeywords && !hasRejectionKeywords -> {
-                    logger.info { "Message accepted based on keywords" }
-                    true
-                }
-
-                hasRejectionKeywords && !hasAcceptanceKeywords -> {
-                    logger.info { "Message rejected based on keywords" }
-                    false
-                }
-
-                else -> {
-                    logger.info { "Could not determine confidence, defaulting to accept" }
-                    true
-                }
-            }
-
         } catch (e: Exception) {
             logger.error(e) { "Error in requestCheck for user $userId" }
             return true
@@ -289,8 +269,7 @@ class OpenAiService(
         val colonPattern = """confidence\s*[:=]\s*(\d{1,3})""".toRegex(RegexOption.IGNORE_CASE)
         colonPattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
 
-        val phrasePattern =
-            """confidence\s+(?:is|equals|score|value|rating)\s+(\d{1,3})""".toRegex(RegexOption.IGNORE_CASE)
+        val phrasePattern = """confidence\s+(?:is|equals|score|value|rating)\s+(\d{1,3})""".toRegex(RegexOption.IGNORE_CASE)
         phrasePattern.find(content)?.groups?.get(1)?.value?.toIntOrNull()?.let { return it }
 
         return null
